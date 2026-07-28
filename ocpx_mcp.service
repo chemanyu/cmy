@@ -1,0 +1,16 @@
+[Unit]
+Description=OCPX Doris MCP Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/adt-go/ocpx_mcp
+ExecStart=/usr/local/adt-go/ocpx_mcp/ocpx_mcp -f /usr/local/adt-go/ocpx_mcp/etc/config.yaml
+Restart=always
+RestartSec=5
+StandardOutput=append:/data/log/go/adt-go/ocpx_mcp/ocpx_mcp.output.log
+StandardError=append:/data/log/go/adt-go/ocpx_mcp/ocpx_mcp.error.log
+
+[Install]
+WantedBy=multi-user.target

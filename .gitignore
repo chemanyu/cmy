@@ -1,0 +1,6 @@
+# etc/config.yaml 里是 Doris 密码与 MCP token，不入库。
+# 目标机上手动维护那份 config（部署脚本首次会传一份模板过去）。
+etc/config.yaml
+
+# 交叉编译产物
+ocpx_mcp
