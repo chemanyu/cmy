@@ -1,6 +1,6 @@
 # OCPX Doris MCP Server
 
-把 Doris 上的 OCPX 广告归因明细表包装成 **MCP 业务语义工具**，让模型不写 SQL 就能做漏斗、下钻、趋势、设备排查与丢失分析。
+提供 **表/字段元数据、常用场景 SQL 示例和统一 SQL 查询入口**，让模型根据用户描述生成 SQL 并查询 Doris。
 
 基于 [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go) v0.48.0，Streamable HTTP + Bearer token 传输，协议版本 `2025-06-18`。
 
@@ -15,47 +15,43 @@
 | `v1` 通用 OCPX | `ocpx_v1_imp` | `ocpx_v1_clk` | `ocpx_v1_track` |
 | `jd` 京东专用 | `ocpx_jd_imp` | `ocpx_jd_clk` | `ocpx_jd_callback` |
 
-所有表的时间列都是 `req_time`；`unikey` 是曝光→点击→转化的共用归因键。
+所有表的时间列都是 `req_time`；`unikey` 是监测 ID，`advertiser_id` 是账户，`up_event_name` 是上游转化事件。监测 ID 不代表单条记录唯一。
 
 ## 工具
 
+仅注册三个工具，保留原名称和请求参数：
+
 | 工具 | 用途 |
 | --- | --- |
-| `list_ocpx_tables` | 拿表地图，第一步 |
-| `describe_ocpx_table` | 某张表的完整列定义、类型、业务含义、用途分类 |
-| `ocpx_funnel` | 一次算出曝光→点击→转化漏斗，含 CTR / CVR / 曝光转化率 |
-| `ocpx_breakdown` | 单表按任意维度聚合 Top N |
-| `ocpx_trend` | 按 minute / hour / day 输出时间序列 |
-| `ocpx_device_lookup` | 按设备号 / unikey / IP 反查三张表的全链路记录 |
-| `ocpx_loss_analysis` | 丢失率、报错率、错误原因 Top N、按 servername 定位单机故障 |
-| `ocpx_sample_rows` | 取少量明细看数据长什么样 |
-| `ocpx_run_sql` | 兜底：执行自定义 SELECT（受严格校验） |
+| `list_ocpx_tables` | 六张表及业务线、环节；元数据会话内复用 |
+| `describe_ocpx_table` | 字段定义、关键字段、查询口径和按表提供的 SQL 示例 |
+| `ocpx_run_sql` | 统一执行自定义 SELECT / WITH，返回真实查询结果 |
 
-### 内置统一口径
+已知表可直接 describe，再调用 run_sql；已有字段上下文可直接 run_sql。
+原 funnel / breakdown / trend / device_lookup / loss_analysis / sample_rows 不再对外注册；源码暂留但不出现在工具列表中。
+更新服务后客户端需刷新工具列表或重新连接。
 
-业务工具默认已按对外汇报口径处理，模型无需自己拼条件：
+### 常用场景
 
-- 剔除 `test_status != 0`（测试流量）与 `is_loss = 1`（丢失记录），可用 `include_test` / `include_loss` 打开
-- 转化量对 `action_pv` 求和，而不是 `count(*)`——一行可能代表多次行为
-- 比率的分母为 0 时返回 `null` 而不是 `0`，避免把"无数据"误读成"转化率 0%"
+| 用户说法 | 查询指引 |
+| --- | --- |
+| 82091968bc 今天有数据吗 / 多少点击和转化 | unikey 字符串过滤，各环节分别统计；无业务线上下文时分开查通用和京东 |
+| 今天 track 有多少上游转化 | ocpx_v1_track 按 up_event_name 分组，返回记录数和 action_pv 行为数 |
+| 1865615583177352 今天 callback 事件4 | advertiser_id 字符串过滤，up_event_name='4'；可按 err/type 分组 |
+| 今天京东订单每小时变化 | callback 的 (up_event_name='4' OR type='scheduled_callback')，按 req_time 小时分桶，补0；当前小时注明未结束 |
+| 八月份 callback 事件4关联 clk 看天数差 | req_id 关联，callback.log_time（Unix秒）对 clk.req_time；点击侧先聚合避免数量膨胀，歧义/未匹配单独展示 |
 
-## 安全模型
+完整指引与示例统一维护在 `internal/tools/guide.go`，同时提供给模型的服务说明和字段工具。
+日期按业务时区转换为明确起止时间；默认 Asia/Shanghai 并说明。月份关联需明确点击回溯窗口，不擅自限定点击也在同月。
+天数默认自然日差，数据库会话时区须与业务时区一致；与每满24小时的口径区分。
+排查查询默认不剔除测试、丢失和错误记录；正式有效统计由用户需求确定 SQL 条件。
+京东 callback 中 `type='scheduled_callback'` 表示低活订单转化，即使 `up_event_name` 为 NULL 或空串也纳入。查询低活订单只按该 type 过滤；泛指订单用 `(up_event_name='4' OR type='scheduled_callback')`，避免遗漏低活订单，也避免重复计数。用户明确查询事件4时仍只按 `up_event_name='4'` 过滤。其他 type 取值含义未配置，不猜测。
 
-分两层，互不依赖：
+## 查询校验与限制
 
-**业务工具走 Builder（`internal/query/builder.go`）**
-- 标识符（表名、列名）只能来自 `internal/schema` 的内置目录：模型传入的字符串仅用于查表，查不到直接报 `column_not_found`，绝不拼接原文
-- 字面量（过滤值、时间）全部走 `?` 占位符交给驱动转义
-- 因此这一层不需要任何 SQL 黑名单
-
-**`ocpx_run_sql` 走白名单校验（`internal/query/validate.go`）**
-- 先剥离字符串字面量与注释，再做关键字检查——所以 `WHERE err = 'drop table x'` 不会被误杀，而 `SELECT 1 /* */ ; DROP ...` 也不会被漏过
-- 必须 `SELECT` / `WITH` 开头；写操作、DDL、权限、会话变更、文件导出关键字一律拒绝（含子查询与 CTE 内部）
-- 拒绝多语句；只能引用这 6 张表（CTE 名字除外）
-- 必须包含 `req_time` 过滤，否则拒绝执行
-- 无 `LIMIT` 时自动追加
-
-**共同的性能闸门**：时间窗口跨度上限（默认 31 天）、时间桶数量上限（5000）、返回行数上限（默认 2000）、单查询超时（默认 120s）。
+`ocpx_run_sql` 使用 `internal/query/validate.go` 的校验：只允许 SELECT/WITH 和六张表，拒绝写操作、多语句；检查 req_time 与 WHERE，缺 LIMIT 时追加。
+当前校验是文本级检查，不能证明每张关联表都有正确时间范围，也不强制 SQL 时间跨度上限。模型应显式给每张明细表加起止条件。
+执行层统一限制返回行数与超时；truncated 表示返回不完整。SQL 工具不自动补测试/丢失过滤或转化统计口径。
 
 ## 配置
 
@@ -108,13 +104,12 @@ HTTP 网关模式的配置：
 Doris:
   QueryURL: "https://rta.zhltech.net/index.php?r=tool/ocpx-query/query"
   QueryKey: "xxxxxxxx"
-  Database: "monitor"     # 仍用于 SQL 里的表名限定
+  Database: "monitor"     # HTTP模式仅用于元数据展示，查询用裸表名
   LogLevel: "info"
 ```
 
 网关接口约定：`GET <QueryURL>?sql=<SQL>&key=<Key>`，返回
-`{"code":0,"data":[{"列":"值",...}],"errInfo":[]}`。上层 6 个业务工具与
-`ocpx_run_sql` 完全不感知走的是哪种后端。
+`{"code":0,"data":[{"列":"值",...}],"errInfo":[]}`。`ocpx_run_sql` 通过统一查询接口执行，不感知具体后端。
 
 两处与直连的固有差异，代码已补偿（见 `internal/doris/http.go`）：
 
@@ -250,8 +245,9 @@ internal/query/builder.go    参数化 SQL 构造器
 internal/query/timewindow.go 时间窗口解析与分桶
 internal/query/validate.go   run_sql 的白名单校验
 internal/tools/tools.go      工具注册、元数据工具、共享入参
-internal/tools/analytics.go  funnel / breakdown / trend
-internal/tools/diagnostics.go device_lookup / loss_analysis / sample_rows / run_sql
+internal/tools/guide.go      业务词典、查询口径、常用场景 SQL 示例
+internal/tools/analytics.go  未注册的旧业务工具实现
+internal/tools/diagnostics.go run_sql 与未注册的旧诊断工具实现
 deploy.sh / deploy_test.sh   线上 / 内网部署
 ocpx_mcp.service             systemd 单元
 ```
@@ -264,11 +260,6 @@ ocpx_mcp.service             systemd 单元
 | --- | --- |
 | `column_not_found` | 列名不存在 → 调 `describe_ocpx_table` 核对 |
 | `table_not_found` | 表名不存在 → 调 `list_ocpx_tables` |
-| `invalid_dimension` | 用大字段做维度 → 换 `groupable_columns` 里的列 |
-| `invalid_metric` | 用非数值列求和 → 换 `metric_columns` 里的列 |
-| `invalid_time` | 时间格式错 → 用 `2006-01-02 15:04:05` / `-2d` |
-| `window_too_large` | 窗口超上限 → 收窄 start/end |
-| `too_many_buckets` | 分桶过多 → 换更粗粒度 |
 | `sql_rejected` | SQL 未通过校验 → 读报错原因改写，不要试图绕过 |
 | `missing_time_filter` | 缺 `req_time` 过滤 → 补上 |
 | `timeout` | 查询超时 → 收窄窗口或加过滤 |

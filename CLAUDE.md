@@ -1,7 +1,6 @@
 # CLAUDE.md — ocpx_mcp
 
-OCPX Doris MCP Server：把 Doris 上 6 张 OCPX 广告归因明细表包装成 MCP 业务语义工具
-（漏斗/下钻/趋势/设备反查/丢失分析），Streamable HTTP + Bearer token 对外提供。
+OCPX Doris MCP Server：把 Doris 上 6 张 OCPX 广告归因明细表提供表/字段元数据、查询指引和统一 SQL 查询工具，Streamable HTTP + Bearer token 对外提供。
 使用说明看 `README.md`，本文件只记「改代码前必读」的约束与踩坑，避免重复犯。
 
 ## 架构速览（改哪找哪）
@@ -11,7 +10,7 @@ OCPX Doris MCP Server：把 Doris 上 6 张 OCPX 广告归因明细表包装成 
 - `internal/schema/catalog.go` — 6 张表的内置元数据目录，**列白名单的唯一事实来源**
 - `internal/query/` — `builder.go` 参数化 SQL 构造 / `validate.go` run_sql 白名单校验 / `timewindow.go` 时间窗口
 - `internal/doris/` — 两个后端实现同一个 `Querier` 接口：`client.go`(直连) / `http.go`(HTTP 网关)
-- `internal/tools/` — 8 个 MCP 工具，全部经 `Deps.DB`(即 `Querier`)查询，不感知后端
+- `internal/tools/` — 3 个对外 MCP 工具（list/describe/run_sql，旧业务实现未注册），全部经 `Deps.DB`(即 `Querier`)查询，不感知后端
 
 ## 两层安全模型（改查询逻辑前必读）
 

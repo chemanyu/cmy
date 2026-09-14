@@ -1,7 +1,7 @@
 // OCPX Doris MCP Server
 //
 // 一个基于 mark3labs/mcp-go 的 MCP 服务，把 Doris 上的 OCPX 广告归因明细表
-// 包装成业务语义工具（漏斗、下钻、趋势、设备反查、丢失分析），
+// 提供表/字段元数据、场景查询指引和统一 SQL 查询工具，
 // 通过 Streamable HTTP + Bearer token 对外提供。
 //
 // 启动示例:
@@ -37,22 +37,10 @@ const (
 
 // instructions 是发给客户端的服务级说明，会出现在 initialize 响应里。
 // 它约束模型的整体调用策略，单个工具的细节写在各自的 description 里。
-const instructions = `本服务提供 OCPX 广告归因数据（Doris）的只读查询能力。
-
-推荐调用顺序:
-  1. list_ocpx_tables       —— 先拿表地图，确认业务线（v1 通用 / jd 京东）
-  2. describe_ocpx_table    —— 需要写过滤条件或选维度时，先读列定义
-  3. 业务工具               —— ocpx_funnel（漏斗转化率）/ ocpx_breakdown（维度下钻）
-                               / ocpx_trend（时间趋势）/ ocpx_device_lookup（单设备排查）
-                               / ocpx_loss_analysis（丢失与报错）/ ocpx_sample_rows（看样本）
-  4. ocpx_run_sql           —— 仅当上面工具都表达不了时的兜底
-
-统一口径（业务工具已内置，无需自己处理）:
-  - 正式统计剔除 test_status != 0（测试流量）与 is_loss = 1（丢失记录）
-  - 转化量按 action_pv 求和，不是 count(*)
-  - 所有查询都必须带 req_time 范围过滤；时间窗口有跨度上限
-
-不要凭记忆猜测表名或列名——猜错会直接报错，读一次元数据更快。`
+const instructions = `本服务提供 OCPX Doris 只读查询，只有三个工具：
+list_ocpx_tables 查看表；describe_ocpx_table 查看字段与场景 SQL 示例；ocpx_run_sql 执行 SQL 并返回真实数据。
+已知表可跳过列表；元数据会话内复用；所有数据查询均用 ocpx_run_sql。
+` + tools.QueryGuide
 
 var configFile = flag.String("f", "etc/config.yaml", "the config file")
 

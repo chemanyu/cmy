@@ -478,32 +478,14 @@ func registerSampleRows(s *server.MCPServer, d *Deps) {
 // ocpx_run_sql —— 兜底逃生舱
 // -----------------------------------------------------------------------------
 
-const runSQLDesc = `
-执行一条自定义 SELECT。这是【兜底工具】——只有当上面的业务工具都无法表达用户需求时
-才用它（例如需要自定义 JOIN、窗口函数、多层子查询）。
-
-能用 ocpx_funnel / ocpx_breakdown / ocpx_trend 表达的需求，一律用那些工具：
-它们已经内置了正确口径（剔测试流量、转化按 action_pv 求和）与性能保护。
-
-输入:
-  - sql (string, 必填): 单条 SELECT 语句，不要带结尾分号
-  - limit (number, 可选): 追加的行数上限，默认取服务配置上限
-
-服务端强制约束（不要尝试绕过）:
-  - 只允许 SELECT / WITH 开头；INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE/
-    GRANT/SET/USE/LOAD 一律拒绝，藏在子查询或 CTE 里同样拒绝
-  - 拒绝多语句（分号分隔）与注释绕过（-- / #  /* */）
-  - 只能访问本 MCP 覆盖的 6 张 OCPX 表，引用其他表会被拒
-  - 必须包含 req_time 的过滤条件，否则拒绝执行（明细表全表扫会拖垮集群）
-  - 未写 LIMIT 时自动追加，且封顶服务配置上限
-
-返回: {columns, rows, row_count, truncated, execution_ms, sql}
-
-错误恢复:
-  - sql_rejected      → 读报错里的具体原因，改写 SQL；不要试图换写法绕过校验
-  - column_not_found  → 调 describe_ocpx_table 核对列名
-  - missing_time_filter → 在 WHERE 里加 req_time 范围
-  - timeout           → 收窄时间窗口或减少 JOIN`
+const runSQLDesc = `统一执行自定义只读 SELECT / WITH，直接返回数据，无需经过其他业务工具。
+输入保持不变：sql（必填），limit（可选）。返回 columns、rows、row_count、truncated、execution_ms、sql。
+表名/字段不确定时读取 list_ocpx_tables / describe_ocpx_table；describe 同时提供常用场景 SQL 示例。
+监测ID=unikey，账户=advertiser_id，上游转化=up_event_name，京东事件4为 up_event_name='4'；低活订单为 type='scheduled_callback'（可无上游事件值）；泛指订单时用两者OR条件。
+所有查询显式限制 req_time 起止范围；时间、测试/丢失过滤及转化统计口径由 SQL 决定，本工具不自动补充。
+只允许六张 OCPX 表，拒绝写操作和多语句；缺少 LIMIT 时追加，结果受服务行数上限与超时限制。
+HTTP 网关使用裸表名。SQL 示例需替换为实际日期和ID，SQL中的字符串值必须转义。
+错误恢复：column_not_found 查看字段；sql_rejected 按错误修改；missing_time_filter 补时间范围；timeout 缩小范围。`
 
 func registerRunSQL(s *server.MCPServer, d *Deps) {
 	tool := readOnlyTool("ocpx_run_sql", runSQLDesc,

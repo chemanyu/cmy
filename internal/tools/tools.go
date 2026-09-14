@@ -25,12 +25,6 @@ type Deps struct {
 func Register(s *server.MCPServer, d *Deps) {
 	registerListTables(s, d)
 	registerDescribeTable(s, d)
-	registerFunnel(s, d)
-	registerBreakdown(s, d)
-	registerTrend(s, d)
-	registerDeviceLookup(s, d)
-	registerLossAnalysis(s, d)
-	registerSampleRows(s, d)
 	registerRunSQL(s, d)
 }
 
@@ -69,23 +63,10 @@ func errf(format string, a ...any) *mcp.CallToolResult {
 // list_ocpx_tables
 // -----------------------------------------------------------------------------
 
-const listTablesDesc = `
-列出本 MCP 覆盖的全部 OCPX Doris 表，以及每张表在归因漏斗中的位置。
-
-【什么时候调用】用户问任何 OCPX / 广告归因问题时的第一步。你不知道有哪些表、
-哪张表属于哪条业务线，先调本工具拿到地图。
-
-返回: {database, tables:[{name, line, stage, title, description, time_column, column_count}]}
-
-两条业务线（不要混用）:
-  - line=v1 通用 OCPX 链路: ocpx_v1_imp(曝光) → ocpx_v1_clk(点击) → ocpx_v1_track(转化)
-  - line=jd  京东专用链路:   ocpx_jd_imp(曝光) → ocpx_jd_clk(点击) → ocpx_jd_callback(转化)
-
-【会话内幂等】本工具返回的是编译进服务的静态目录，单次会话内不会变化。
-调用过一次就复用结果，不要重复调用。
-
-下一步: 用 describe_ocpx_table 看具体表的列，或直接用 ocpx_funnel / ocpx_breakdown
-等业务工具——那些工具不需要你手写 SQL。`
+const listTablesDesc = `列出六张 OCPX 表及业务线、环节、说明。静态目录，会话内复用。
+通用点击=ocpx_v1_clk，track/通用转化=ocpx_v1_track；京东点击=ocpx_jd_clk，callback/京东转化=ocpx_jd_callback。
+监测ID=unikey；账户=advertiser_id；上游转化=up_event_name；京东事件4=up_event_name 的字符串 '4'，低活订单=type 的字符串 'scheduled_callback'，可无上游事件值。
+不知道表时调用；已知表可直接 describe_ocpx_table 获取字段与查询示例，再用 ocpx_run_sql 查询。`
 
 func registerListTables(s *server.MCPServer, d *Deps) {
 	tool := readOnlyTool("list_ocpx_tables", listTablesDesc)
@@ -133,29 +114,11 @@ func registerListTables(s *server.MCPServer, d *Deps) {
 // describe_ocpx_table
 // -----------------------------------------------------------------------------
 
-const describeTableDesc = `
-返回一张 OCPX 表的完整列清单，含类型、业务含义与用途分类。写任何过滤条件
-或选择聚合维度之前，都应先读本工具的输出，不要凭列名猜测。
-
-输入: table (string, 必填，来自 list_ocpx_tables)
-返回: {table, line, stage, time_column, duplicate_key, columns:[{name,type,kind,description}],
-       groupable_columns, device_id_columns, metric_columns}
-
-列的 kind 决定它能用在哪:
-  - time       时间列，只有 req_time；所有查询必须按它过滤
-  - dimension  可 GROUP BY、可过滤
-  - device_id  设备/用户标识，可用 ocpx_device_lookup 反查全链路
-  - metric     数值列，可求和/求平均
-  - diagnostic 诊断列（is_loss / err），用 ocpx_loss_analysis 分析
-  - raw        大字段（text、超长 varchar），只能在明细里看，禁止 GROUP BY
-
-【重要口径提醒】
-  - 转化量要对 action_pv 求和，不是 count(*)——一行可能代表多次行为
-  - 正式统计应剔除 test_status != 0（测试流量）与 is_loss = 1（丢失记录），
-    业务工具默认已按此口径处理
-  - DUPLICATE KEY 表意味着可能存在重复行，去重需按业务键（通常是 unikey）
-
-【会话内幂等】同一张表不要重复调用本工具。`
+const describeTableDesc = `返回表的字段、类型、业务含义、关键字段、查询指引与 SQL 示例。
+监测ID=unikey，账户=advertiser_id，上游转化=up_event_name；这些字段都是字符串。
+查询指引覆盖监测ID点击/转化、上游事件分组、京东账户事件4、小时趋势、callback与clk关联的天数分布。
+示例是写 SQL 的参考，替换日期/ID后通过 ocpx_run_sql 执行；本工具只返回元数据，不执行查询。
+同一张表会话内复用。kind 是字段用途提示；转化记录数 COUNT(*) 与行为数 SUM(action_pv) 必须区分。`
 
 func registerDescribeTable(s *server.MCPServer, d *Deps) {
 	tool := readOnlyTool("describe_ocpx_table", describeTableDesc,
@@ -206,6 +169,9 @@ func registerDescribeTable(s *server.MCPServer, d *Deps) {
 			"duplicate_key":     t.DupKeys,
 			"columns":           cols,
 			"groupable_columns": t.GroupableNames(),
+			"query_guide":       QueryGuide,
+			"query_examples":    examplesFor(t.Name),
+			"key_fields":        keyFields(t),
 			"device_id_columns": deviceCols,
 			"metric_columns":    metricCols,
 		}
@@ -217,6 +183,10 @@ func registerDescribeTable(s *server.MCPServer, d *Deps) {
 		b.WriteString("## 列\n\n| 列名 | 类型 | 分类 | 含义 |\n| --- | --- | --- | --- |\n")
 		for _, c := range cols {
 			fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", c.Name, c.Type, c.Kind, c.Description)
+		}
+		fmt.Fprintf(&b, "\n## 查询指引\n\n%s\n", QueryGuide)
+		for _, ex := range examplesFor(t.Name) {
+			fmt.Fprintf(&b, "\n### %s\n\n%s\n\n```sql\n%s\n```\n", ex.Scenario, ex.Notes, ex.SQL)
 		}
 		return resultJSON(payload, b.String()), nil
 	})
