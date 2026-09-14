@@ -475,17 +475,18 @@ func registerSampleRows(s *server.MCPServer, d *Deps) {
 }
 
 // -----------------------------------------------------------------------------
-// ocpx_run_sql —— 兜底逃生舱
+// ocpx_run_sql —— 统一数据查询入口
 // -----------------------------------------------------------------------------
 
 const runSQLDesc = `统一执行自定义只读 SELECT / WITH，直接返回数据，无需经过其他业务工具。
 输入保持不变：sql（必填），limit（可选）。返回 columns、rows、row_count、truncated、execution_ms、sql。
 表名/字段不确定时读取 list_ocpx_tables / describe_ocpx_table；describe 同时提供常用场景 SQL 示例。
+通用track和京东callback：err非空表示已真实收到但被我方过滤，不向下游回传；默认转化/订单量包含这些记录。err为空仅表示未标记过滤，不能等同回传成功；可拆分收到/过滤/未过滤数量。
 监测ID=unikey，账户=advertiser_id，上游转化=up_event_name，京东事件4为 up_event_name='4'；低活订单为 type='scheduled_callback'（可无上游事件值）；泛指订单时用两者OR条件。
 所有查询显式限制 req_time 起止范围；时间、测试/丢失过滤及转化统计口径由 SQL 决定，本工具不自动补充。
 只允许六张 OCPX 表，拒绝写操作和多语句；缺少 LIMIT 时追加，结果受服务行数上限与超时限制。
 HTTP 网关使用裸表名。SQL 示例需替换为实际日期和ID，SQL中的字符串值必须转义。
-错误恢复：column_not_found 查看字段；sql_rejected 按错误修改；missing_time_filter 补时间范围；timeout 缩小范围。`
+错误恢复：column_not_found 查看字段；sql_rejected 按错误修改；missing_time_filter 补时间范围；timeout 缩小范围。` + "\n" + QuickQueryGuide
 
 func registerRunSQL(s *server.MCPServer, d *Deps) {
 	tool := readOnlyTool("ocpx_run_sql", runSQLDesc,

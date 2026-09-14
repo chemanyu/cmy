@@ -35,16 +35,17 @@
 
 | 用户说法 | 查询指引 |
 | --- | --- |
+| 九月份，京东有多少订单转化 | 直接套用 JDOrderTotalSQL，一次 run_sql 查全账户收到总量；事件4 OR 低活订单，包含 err 非空记录 |
 | 82091968bc 今天有数据吗 / 多少点击和转化 | unikey 字符串过滤，各环节分别统计；无业务线上下文时分开查通用和京东 |
 | 今天 track 有多少上游转化 | ocpx_v1_track 按 up_event_name 分组，返回记录数和 action_pv 行为数 |
 | 1865615583177352 今天 callback 事件4 | advertiser_id 字符串过滤，up_event_name='4'；可按 err/type 分组 |
 | 今天京东订单每小时变化 | callback 的 (up_event_name='4' OR type='scheduled_callback')，按 req_time 小时分桶，补0；当前小时注明未结束 |
 | 八月份 callback 事件4关联 clk 看天数差 | req_id 关联，callback.log_time（Unix秒）对 clk.req_time；点击侧先聚合避免数量膨胀，歧义/未匹配单独展示 |
 
-完整指引与示例统一维护在 `internal/tools/guide.go`，同时提供给模型的服务说明和字段工具。
+完整指引与示例统一维护在 `internal/tools/guide.go`。高频京东订单总量模板直接出现在服务说明与 `ocpx_run_sql` 工具描述中，无需先读取元数据；callback 字段工具也把它作为首个示例返回。月份默认沿用上下文年份，无则当前年份，回答明确日期和口径；当前月注明截至查询时刻。
 日期按业务时区转换为明确起止时间；默认 Asia/Shanghai 并说明。月份关联需明确点击回溯窗口，不擅自限定点击也在同月。
 天数默认自然日差，数据库会话时区须与业务时区一致；与每满24小时的口径区分。
-排查查询默认不剔除测试、丢失和错误记录；正式有效统计由用户需求确定 SQL 条件。
+通用 track 和京东 callback 中，`err` 非空表示转化已真实收到，但被我方过滤、不向下游回传。默认订单数、上游转化量和收到趋势包含这些记录；`received_records` 是收到总记录数，`received_action_count` 是全部收到记录的 action_pv 求和。示例另列 `filtered_records`、`unfiltered_records`、`unfiltered_action_count`。`err` 为空仅表示未标记过滤，不能等同回传成功；实际回传量需核实 cb_action_pv/cb_depth_action_pv 等指标口径。只有明确查询未过滤转化时才筛选 `(err IS NULL OR err='')`。排查过滤原因保留全部记录按 err 分组；test_status/is_loss 的其他过滤条件遵循用户要求。
 京东 callback 中 `type='scheduled_callback'` 表示低活订单转化，即使 `up_event_name` 为 NULL 或空串也纳入。查询低活订单只按该 type 过滤；泛指订单用 `(up_event_name='4' OR type='scheduled_callback')`，避免遗漏低活订单，也避免重复计数。用户明确查询事件4时仍只按 `up_event_name='4'` 过滤。其他 type 取值含义未配置，不猜测。
 
 ## 查询校验与限制

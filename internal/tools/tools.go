@@ -65,6 +65,7 @@ func errf(format string, a ...any) *mcp.CallToolResult {
 
 const listTablesDesc = `列出六张 OCPX 表及业务线、环节、说明。静态目录，会话内复用。
 通用点击=ocpx_v1_clk，track/通用转化=ocpx_v1_track；京东点击=ocpx_jd_clk，callback/京东转化=ocpx_jd_callback。
+通用track和京东callback：err非空表示已真实收到但被我方过滤，不向下游回传；默认转化/订单量包含这些记录。err为空仅表示未标记过滤，不能等同回传成功；可拆分收到/过滤/未过滤数量。
 监测ID=unikey；账户=advertiser_id；上游转化=up_event_name；京东事件4=up_event_name 的字符串 '4'，低活订单=type 的字符串 'scheduled_callback'，可无上游事件值。
 不知道表时调用；已知表可直接 describe_ocpx_table 获取字段与查询示例，再用 ocpx_run_sql 查询。`
 
